@@ -1,0 +1,6 @@
+{
+  "name": "SYRO - Smart Yield Response",
+  "description": "Smart Yield Response - A multi-agent crisis management and incident reporting system with real-time grid monitoring simulation and AI-powered semantic analysis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
