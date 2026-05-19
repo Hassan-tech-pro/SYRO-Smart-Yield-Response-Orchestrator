@@ -10,8 +10,8 @@ const NATIONWIDE_GRID = {
     mul: "multan"
   },
   sensor_status: {
-    lahore: "Alert",
-    islamabad: "Alert",
+    lahore: "Stable",
+    islamabad: "Stable",
     faisalabad: "Stable",
     karachi: "Stable"
   },
@@ -37,7 +37,7 @@ const CITY_COORDS = {
   'sialkot': { lat: 32.4945, lon: 74.5229 }
 };
 
-export class SYROOrchestrator {
+export class SYRO {
   constructor(onLog) {
     this.logs = [];
     this.onLog = onLog;
@@ -91,16 +91,13 @@ export class SYROOrchestrator {
   async processCrisis(userInput) {
     const inputLower = userInput.toLowerCase();
     
-    this.addLog("InputAgent", "Receiving report: " + userInput);
-    await this.delay(600);
-    this.addLog("InputAgent", "Querying Pakistan Nationwide Grid Monitoring System (PNGMS)...");
-    await this.delay(800);
+    this.addLog("InputAgent", "Analyzing: " + (userInput.length > 30 ? userInput.substring(0, 30) + "..." : userInput));
+    await this.delay(Math.floor(Math.random() * (1200 - 600 + 1)) + 600);
 
     let detectedCity = null;
     let isDescriptive = false;
     let geminiAnalysis = null;
     
-    this.addLog("InputAgent", "Sending report to secure server for AI analysis...");
     try {
       const response = await this.fetchWithTimeout("/api/analyze-crisis", {
         method: "POST",
@@ -112,29 +109,34 @@ export class SYROOrchestrator {
         geminiAnalysis = await response.json();
         detectedCity = geminiAnalysis.city;
         isDescriptive = geminiAnalysis.isCrisis;
-        this.addLog("InputAgent", `Gemini Analysis Complete -> Target: ${detectedCity?.toUpperCase() || 'UNKNOWN'}, Severity: ${isDescriptive ? 'HIGH' : 'LOW'} (Secure Server)`);
+        const aiConfidence = geminiAnalysis.confidence || 0;
+        const reason = geminiAnalysis.reason || "";
+        this.addLog("InputAgent", `Target: ${detectedCity?.toUpperCase() || 'UNKNOWN'} | Confidence: ${aiConfidence}%`);
+        if (aiConfidence < 50 && reason) {
+          this.addLog("InputAgent", `Warning: ${reason}`, "warning");
+        }
       } else {
         const errData = await response.json();
-        this.addLog("InputAgent", `AI analysis skipped: ${errData.error || 'Server error'}`);
+        this.addLog("InputAgent", `Processor Error: ${errData.error || 'Server error'}`);
       }
     } catch (err) {
       console.error("Analysis route failed:", err);
-      this.addLog("InputAgent", "AI analysis route failed or timed out. Falling back to rules engine.");
+      this.addLog("InputAgent", "Sync timeout. Using local rules.");
     }
     
-    // Deterministic Fallback if AI fails or is not configured
+    // Deterministic Fallback
     if (!geminiAnalysis) {
       detectedCity = NATIONWIDE_GRID.active_zones.find(city => inputLower.includes(city));
       if (!detectedCity) {
         const alias = Object.keys(NATIONWIDE_GRID.aliases).find(a => inputLower.includes(a));
         if (alias) detectedCity = NATIONWIDE_GRID.aliases[alias];
       }
-      isDescriptive = inputLower.includes("blast") || inputLower.includes("fire") || inputLower.includes("smoke") || inputLower.includes("explosion") || inputLower.includes("jal");
+      isDescriptive = false; // Default to false in fallback
+      geminiAnalysis = { isCrisis: isDescriptive, city: detectedCity, confidence: Math.floor(Math.random() * 8) };
     }
     
     const cityDisplayName = detectedCity ? detectedCity.toUpperCase() : "UNKNOWN REGION";
     
-    this.addLog("DetectorAgent", `Checking regional weather sensors for ${cityDisplayName}...`);
     let regionalWeather = { condition: "Clear Skies", precipitation: "0%" };
     
     if (detectedCity && CITY_COORDS[detectedCity]) {
@@ -145,108 +147,85 @@ export class SYROOrchestrator {
         
         const code = data.current_weather.weathercode;
         let conditionStr = "Clear Skies";
-        if (code >= 95) conditionStr = "Heavy Storm / Thunderstorm";
-        else if (code >= 61) conditionStr = "Rain / Showers";
+        if (code >= 95) conditionStr = "Storm";
+        else if (code >= 61) conditionStr = "Rain";
         else if (code >= 51) conditionStr = "Drizzle";
-        else if (code >= 45) conditionStr = "Foggy";
-        else if (code > 0) conditionStr = "Partly Cloudy";
+        else if (code >= 45) conditionStr = "Fog";
+        else if (code > 0) conditionStr = "Cloudy";
         
-        regionalWeather = {
-          condition: conditionStr,
-          precipitation: code >= 50 ? "High" : "Low"
-        };
-      } catch (e) {
-        this.addLog("DetectorAgent", "Weather API failed or timed out, using fallback sensors.");
-      }
+        regionalWeather = { condition: conditionStr, precipitation: code >= 50 ? "High" : "Low" };
+      } catch (e) {}
     }
     
-    await this.delay(500);
-    this.addLog("DetectorAgent", `Weather Result: ${regionalWeather.condition} (Live).`);
-
     const gridStatus = detectedCity ? (NATIONWIDE_GRID.sensor_status[detectedCity] || "Stable") : "Stable";
-    this.addLog("DetectorAgent", `Querying ${cityDisplayName} Grid Sensors...`);
-    await this.delay(700);
-    this.addLog("DetectorAgent", `Grid Sensor Status: ${gridStatus === 'Alert' ? "CRITICAL SPIKE DETECTED" : "NOMINAL"}.`);
-
     const hasSocialMatch = isDescriptive && detectedCity !== "faisalabad";
-    const socialFeed = hasSocialMatch ? "Witness reports correlating with human report." : "No matching local social feeds.";
-    this.addLog("DetectorAgent", "Scanning social media feeds...");
-    await this.delay(700);
-    this.addLog("DetectorAgent", `Social Result: ${socialFeed}`);
-
+    
+    this.addLog("DetectorAgent", `Sensors: ${gridStatus === 'Alert' ? "CRITICAL" : "NOMINAL"} | Weather: ${regionalWeather.condition} | Social: ${hasSocialMatch ? 'MATCH' : 'NONE'}`);
     await this.delay(1000);
-
-    const gridConflict = gridStatus === "Stable";
-    if (gridStatus === 'Alert' && isDescriptive) {
-      this.addLog("DetectorAgent", `CRISIS VERIFIED: High correlation between sensors and eyewitness report.`, "error");
-      return this.runVerifiedSequence(userInput, detectedCity, "94%");
+ 
+    const aiConfidence = geminiAnalysis.confidence || 0;
+    const reason = geminiAnalysis.reason || "";
+ 
+    // The AI is now the primary decision maker.
+    const threshold = Math.floor(Math.random() * 10) + 25; // Variable threshold between 25-35
+    if (geminiAnalysis.isCrisis && aiConfidence > threshold) {
+      this.addLog("DetectorAgent", `Verification complete. AI Confidence: ${aiConfidence}% (Threshold: ${threshold}%)`, gridStatus === 'Alert' ? "error" : "warning");
+      return this.runVerifiedSequence(userInput, detectedCity, `${aiConfidence}%`, gridStatus !== 'Alert');
     }
-
-    if (gridConflict && isDescriptive) {
-      this.addLog("DetectorAgent", "SENSOR MISMATCH: Grid is stable but report is highly descriptive.", "warning");
-      this.addLog("DetectorAgent", "ACTION: Trusting eyewitness over sensors (Latency override). Confidence: 60%.", "info");
-      return this.runVerifiedSequence(userInput, detectedCity, "60%", true);
-    }
-
-    this.addLog("DetectorAgent", "INTELLIGENCE CONFLICT: Insufficient evidence to trigger grid response.", "warning");
-    return this.runFalseAlarmSequence(userInput, cityDisplayName);
+ 
+    this.addLog("DetectorAgent", "Response aborted based on analysis.", "warning");
+    return this.runFalseAlarmSequence(userInput, cityDisplayName, reason, aiConfidence);
   }
-
+ 
   async runVerifiedSequence(userInput, city, confidence, isOverride = false) {
     const asset = NATIONWIDE_GRID.assets[city] || { feeder: "GENERIC-F1", crew: "Regional Team", zone: "Reported Area" };
     
-    this.addLog("AnalysisAgent", `Assessing impact zone in ${city.toUpperCase()} (${asset.zone})...`);
-    await this.delay(1000);
-    this.addLog("AnalysisAgent", isOverride ? `Caution: Proceeding with Precautionary Status (60%).` : `Severity: HIGH. Confidence Score: ${confidence}.`, isOverride ? "warning" : "error");
-
-    this.addLog("PlannerAgent", `Coordinating ${asset.feeder} emergency plan...`);
-    await this.delay(1000);
-    this.addLog("PlannerAgent", `Plan: Dispatch ${asset.crew} to ${asset.zone} initiated.`, "success");
-
-    this.addLog("SimulatorAgent", "Sending emergency SMS alert via Twilio...");
+    this.addLog("AnalysisAgent", `Impact zone: ${city.toUpperCase()} | Status: ${isOverride ? 'Precautionary' : 'Critical'}`);
+    await this.delay(Math.floor(Math.random() * (1000 - 500 + 1)) + 500);
+ 
+    this.addLog("PlannerAgent", `Deploying ${asset.crew} | Feeder: ${asset.feeder}`, "success");
+    await this.delay(Math.floor(Math.random() * (1500 - 800 + 1)) + 800);
+ 
     try {
       await this.sendEmergencyAlert(city, asset.zone);
-      this.addLog("SimulatorAgent", "✅ Emergency SMS dispatched to verified WAPDA contacts.", "success");
+      this.addLog("SimulatorAgent", "✅ Alert dispatched to field contacts.", "success");
     } catch (error) {
-      this.addLog("SimulatorAgent", `❌ Twilio SMS Failed: ${error.message}`, "error");
+      this.addLog("SimulatorAgent", `❌ alert dispatch error`, "error");
     }
-    await this.delay(1000);
-
-    this.addLog("SimulatorAgent", isOverride ? "Team ETA: 10 mins for on-site verification." : `Success: Power restoration bypass active. ETA: 35 mins.`, "success");
-
-    this.addLog("LoggerAgent", `Incident SYRO-VERIFIED stored. Auth: ${isOverride ? 'CITIZEN_OVERRIDE' : 'SENSOR_VERIFIED'}.`);
-
+    await this.delay(Math.floor(Math.random() * (1200 - 700 + 1)) + 700);
+ 
+    this.addLog("LoggerAgent", `SYRO-VERIFIED. Auth: ${isOverride ? 'CITIZEN' : 'SENSOR'}.`);
+ 
     return {
       userInput,
       status: "Verified",
       city: city.toUpperCase(),
       confidence: parseInt(confidence),
       feederId: asset.feeder,
-      eta: isOverride ? "10m" : "35m",
-      impact: isOverride ? "Potential" : "Critical"
+      eta: isOverride ? `${Math.floor(Math.random() * 8) + 5}m` : `${Math.floor(Math.random() * 20) + 25}m`,
+      impact: isOverride ? (Math.random() > 0.5 ? "Local/Low" : "Precautionary") : (Math.random() > 0.5 ? "Critical/High" : "Severe Outage")
     };
   }
+ 
+  async runFalseAlarmSequence(userInput, cityDisplayName, reason = "", confidence = 0) {
+    this.addLog("AnalysisAgent", "Cross-referencing sources... Conflict detected.", "warning");
+    await this.delay(Math.floor(Math.random() * (1000 - 500 + 1)) + 500);
 
-  async runFalseAlarmSequence(userInput, cityDisplayName) {
-    this.addLog("SimulatorAgent", "⚠️ Preliminary alert issued to monitoring system.", "warning");
-    await this.delay(800);
+    const logMsg = reason ? reason : "Confidence below threshold.";
+    this.addLog("AnalysisAgent", logMsg, "error");
+    await this.delay(Math.floor(Math.random() * (800 - 400 + 1)) + 400);
 
-    this.addLog("AnalysisAgent", "Cross-referencing sources... Intelligence conflict detected.", "warning");
-    await this.delay(800);
+    this.addLog("SimulatorAgent", "🔄 System state restored. No changes committed.", "info");
+    await this.delay(Math.floor(Math.random() * (800 - 400 + 1)) + 400);
 
-    this.addLog("AnalysisAgent", "Confidence below threshold. RETRACTING alert.", "warning");
-    await this.delay(600);
-
-    this.addLog("SimulatorAgent", "🔄 System state rolled back. No grid changes committed.", "info");
-    await this.delay(600);
-
-    this.addLog("LoggerAgent", `✅ False alarm archived. ${cityDisplayName} status restored to NOMINAL.`, "success");
+    const archiveMsg = reason && reason.includes("Insufficient") ? `✅ REJECTED: Not enough information.` : `✅ ARCHIVED: Potential false alarm.`;
+    this.addLog("LoggerAgent", archiveMsg, "success");
 
     return {
       userInput,
       status: "Retracted",
       city: cityDisplayName,
-      confidence: 12,
+      confidence: confidence,
       eta: "N/A",
       impact: "None"
     };

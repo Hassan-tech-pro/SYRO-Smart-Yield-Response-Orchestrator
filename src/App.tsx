@@ -10,10 +10,11 @@
 
 import React, { useState, useRef, useEffect } from "react";
 // @ts-ignore
-import { SYROOrchestrator } from "./agents/orchestrator";
+import { SYRO } from "./agents/orchestrator";
 // @ts-ignore
-import { auth, db, googleProvider, signInWithPopup, signOut, collection, addDoc, getDocs, query, orderBy } from "./config/firebase";
+import { auth, db, googleProvider, signInWithPopup, signOut, collection, addDoc, getDocs, query, orderBy, deleteDoc, doc, writeBatch } from "./config/firebase";
 import { onAuthStateChanged } from "firebase/auth";
+import { Trash2, X, ChevronRight, Clock, MapPin, ShieldAlert } from "lucide-react";
 
 const PRESETS = [
   "transformer blast in lahore near main boulevard",
@@ -53,11 +54,41 @@ export default function App() {
   const logsEnd = useRef<HTMLDivElement>(null);
   const orchestrator = useRef<any>(null);
   if (!orchestrator.current) {
-    orchestrator.current = new SYROOrchestrator((entry: any) => {
+    orchestrator.current = new SYRO((entry: any) => {
       setLogs(prev => [...prev, entry]);
       setActiveAgents(prev => new Set([...prev, entry.agent]));
     });
   }
+
+  const deleteHistoryItem = async (e: React.MouseEvent, itemId: string) => {
+    e.stopPropagation();
+    if (selected?.id === itemId) setSelected(null);
+    setHistory(prev => prev.filter(item => item.id !== itemId));
+    if (user) {
+      try {
+        await deleteDoc(doc(db, `users/${user.uid}/history`, itemId));
+      } catch (err) {
+        console.error("Delete failed:", err);
+      }
+    }
+  };
+
+  const clearAllHistory = async () => {
+    if (!confirm("Are you sure you want to clear your entire history?")) return;
+    setHistory([]);
+    setSelected(null);
+    if (user) {
+      try {
+        const q = query(collection(db, `users/${user.uid}/history`));
+        const snapshot = await getDocs(q);
+        const batch = writeBatch(db);
+        snapshot.docs.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      } catch (err) {
+        console.error("Clear all failed:", err);
+      }
+    }
+  };
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
@@ -113,7 +144,9 @@ export default function App() {
       // Save to Firebase if authenticated
       if (user) {
         try {
-          await addDoc(collection(db, `users/${user.uid}/history`), newIncident);
+          const docRef = await addDoc(collection(db, `users/${user.uid}/history`), newIncident);
+          // Sync temporary local ID with Firebase ID
+          setHistory(prev => prev.map(item => item.timestamp === newIncident.timestamp ? { ...item, id: docRef.id } : item));
         } catch (error) {
           console.error("Error saving incident:", error);
         }
@@ -167,7 +200,7 @@ export default function App() {
       {/* Page Content */}
       <div style={{ flex: 1, overflowY: "auto", paddingBottom: 72 }}>
         {page === "home" && <Home input={input} setInput={setInput} logs={logs} result={result} running={running} activeAgents={activeAgents} history={history} run={run} logsEnd={logsEnd} />}
-        {page === "history" && <History history={history} selected={selected} setSelected={setSelected} />}
+        {page === "history" && <History history={history} selected={selected} setSelected={setSelected} onDelete={deleteHistoryItem} onClearAll={clearAllHistory} />}
         {page === "settings" && <Settings settings={settings} setSettings={setSettings} user={user} />}
       </div>
 
@@ -185,9 +218,10 @@ export default function App() {
 }
 
 function Home({ input, setInput, logs, result, running, activeAgents, history, run, logsEnd }: any) {
+  const [presetsVisible, setPresetsVisible] = useState(true);
   const stats = { total: history.length, verified: history.filter((h: any) => h.status === "Verified").length, retracted: history.filter((h: any) => h.status === "Retracted").length };
   const sec: React.CSSProperties = { padding: "14px 16px" };
-  const label: React.CSSProperties = { fontSize: 9, color: "var(--text-dim)", letterSpacing: "0.18em", marginBottom: 10 };
+  const label: React.CSSProperties = { fontSize: 9, color: "var(--text-dim)", letterSpacing: "0.18em", marginBottom: 10, display: "flex", alignItems: "center", justifyContent: "space-between" };
   const card: React.CSSProperties = { background: "var(--surface)", border: `1px solid var(--border)`, borderRadius: 10, padding: "12px 14px", marginBottom: 10 };
   
   return (
@@ -214,30 +248,18 @@ function Home({ input, setInput, logs, result, running, activeAgents, history, r
       </div>
 
       <div style={sec}>
-        <div style={label}>▸ SCENARIO PRESETS</div>
-        {PRESETS.map((p, i) => (
+        <div style={label}>
+          <span>▸ SCENARIO PRESETS</span>
+          <button onClick={() => setPresetsVisible(!presetsVisible)} style={{ background: "transparent", border: "none", color: "var(--text-dim)", cursor: "pointer", display: "flex", alignItems: "center" }}>
+            <ChevronRight size={14} style={{ transform: presetsVisible ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s" }} />
+          </button>
+        </div>
+        {presetsVisible && PRESETS.map((p, i) => (
           <button key={i} onClick={() => { setInput(p); run(p); }} disabled={running} className="nb"
             style={{ width: "100%", textAlign: "left", background: "var(--bg)", border: `1px solid var(--border)`, borderRadius: 6, color: "var(--text-muted)", fontSize: 11, padding: "8px 10px", cursor: "pointer", fontFamily: "inherit", marginBottom: 6, lineHeight: 1.4, transition: "background 0.2s" }}>
             <span style={{ color: "#3b82f6", marginRight: 6 }}>#{i + 1}</span>{p}
           </button>
         ))}
-      </div>
-
-      <div style={sec}>
-        <div style={label}>▸ AGENT PIPELINE</div>
-        <div style={card}>
-          {Object.keys(AI).map((agent, i) => {
-            // @ts-ignore
-            const active = activeAgents.has(agent);
-            return (
-              <div key={agent} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: i < 5 ? `1px solid var(--border)` : "none" }}>
-                <span style={{ fontSize: 14 }}>{(AI as any)[agent]}</span>
-                <div style={{ flex: 1, fontSize: 11, color: active ? (AC as any)[agent] : "var(--text-dim)", transition: "color 0.3s", fontWeight: active ? 500 : 400 }}>{agent.replace("Agent", "")}</div>
-                <div style={{ width: 6, height: 6, borderRadius: "50%", background: active ? (AC as any)[agent] : "var(--border)", transition: "background 0.3s", animation: active && running ? "pulse 1.5s infinite" : "none" }} />
-              </div>
-            );
-          })}
-        </div>
       </div>
 
       {result && (
@@ -298,23 +320,29 @@ function Home({ input, setInput, logs, result, running, activeAgents, history, r
   );
 }
 
-function History({ history, selected, setSelected }: any) {
+function History({ history, selected, setSelected, onDelete, onClearAll }: any) {
   const sec: React.CSSProperties = { padding: "14px 16px" };
   const label: React.CSSProperties = { fontSize: 9, color: "var(--text-dim)", letterSpacing: "0.18em", marginBottom: 10 };
-  const badge = (c: string): React.CSSProperties => ({ fontSize: 9, padding: "2px 7px", borderRadius: 3, background: c + "22", color: c, fontWeight: 600, letterSpacing: "0.08em" });
+  const badge = (c: string): React.CSSProperties => ({ fontSize: 9, padding: "2px 7px", borderRadius: 3, background: c + "22", color: c, fontWeight: 600, letterSpacing: "0.08em", display: "flex", alignItems: "center", gap: 4 });
 
   if (selected) return (
     <div style={sec}>
-      <button onClick={() => setSelected(null)} className="back"
-        style={{ background: "transparent", border: `1px solid var(--border)`, borderRadius: 6, color: "#60a5fa", fontSize: 12, padding: "6px 12px", cursor: "pointer", fontFamily: "inherit", marginBottom: 14, transition: "background 0.2s" }}>
-        ← BACK
-      </button>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <button onClick={() => setSelected(null)} className="back"
+          style={{ background: "transparent", border: `1px solid var(--border)`, borderRadius: 6, color: "#60a5fa", fontSize: 12, padding: "6px 12px", cursor: "pointer", fontFamily: "inherit", transition: "background 0.2s" }}>
+          ← BACK
+        </button>
+        <button onClick={(e) => onDelete(e, selected.id)}
+          style={{ background: "rgba(239, 68, 68, 0.1)", border: "1px solid rgba(239, 68, 68, 0.2)", borderRadius: 6, color: "#ef4444", padding: "6px 10px", cursor: "pointer", display: "flex", alignItems: "center", gap: 5, fontSize: 11 }}>
+          <Trash2 size={12} /> DELETE
+        </button>
+      </div>
       <div style={label}>▸ INCIDENT DETAIL</div>
       <div style={{ background: selected.status === "Verified" ? "rgba(220,38,38,0.1)" : "rgba(34,197,94,0.1)", border: `1px solid ${selected.status === "Verified" ? "#7f1d1d" : "#14532d"}`, borderRadius: 10, padding: "14px", marginBottom: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, color: selected.status === "Verified" ? "#f87171" : "#34d399", fontFamily: "'Space Grotesk',sans-serif" }}>{selected.status === "Verified" ? "⚠ CRISIS VERIFIED" : "✓ ALERT RETRACTED"}</div>
-            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>{selected.city}</div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2, display: "flex", alignItems: "center", gap: 4 }}><MapPin size={10} /> {selected.city}</div>
           </div>
           <div style={{ textAlign: "right" }}>
             <div style={{ fontSize: 20, fontWeight: 700, color: selected.confidence > 50 ? "#f87171" : "#34d399", fontFamily: "'Space Grotesk',sans-serif" }}>{selected.confidence}%</div>
@@ -331,14 +359,23 @@ function History({ history, selected, setSelected }: any) {
             <div style={{ background: "var(--surface)", borderRadius: 6, padding: "8px 10px", border: "1px solid var(--border)" }}><div style={{ fontSize: 9, color: "var(--text-dim)" }}>RESTORATION ETA</div><div style={{ fontSize: 13, color: "#60a5fa", fontWeight: 600 }}>{selected.eta}</div></div>
           </div>
         )}
-        <div style={{ fontSize: 10, color: "var(--text-dim)" }}>{selected.time}</div>
+        <div style={{ fontSize: 10, color: "var(--text-dim)", display: "flex", alignItems: "center", gap: 4 }}><Clock size={10} /> {selected.time}</div>
       </div>
     </div>
   );
 
   return (
     <div style={sec}>
-      <div style={label}>▸ INCIDENT HISTORY ({history.length})</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ ...label, marginBottom: 0 }}>▸ INCIDENT HISTORY ({history.length})</div>
+        {history.length > 0 && (
+          <button onClick={onClearAll} 
+            style={{ background: "transparent", border: "none", color: "#f87171", fontSize: 10, cursor: "pointer", fontFamily: "'Space Grotesk',sans-serif", fontWeight: 600, letterSpacing: "0.05em", display: "flex", alignItems: "center", gap: 4 }}>
+            <Trash2 size={12} /> CLEAR ALL
+          </button>
+        )}
+      </div>
+      
       {history.length === 0 && (
         <div style={{ textAlign: "center", padding: "60px 0", color: "var(--text-dim)" }}>
           <div style={{ fontSize: 36, marginBottom: 12 }}>📋</div>
@@ -348,17 +385,28 @@ function History({ history, selected, setSelected }: any) {
       )}
       {history.map((incident: any) => (
         <div key={incident.id} className="hc si" onClick={() => setSelected(incident)}
-          style={{ background: "var(--surface)", border: `1px solid var(--border)`, borderRadius: 10, padding: "12px 14px", marginBottom: 8, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", transition: "background 0.2s" }}>
+          style={{ background: "var(--surface)", border: `1px solid var(--border)`, borderRadius: 10, padding: "12px 14px", marginBottom: 8, cursor: "pointer", display: "flex", alignItems: "center", gap: 12, transition: "background 0.2s", position: "relative" }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5, flexWrap: "wrap" }}>
-              <span style={badge(incident.status === "Verified" ? "#f87171" : "#34d399")}>{incident.status === "Verified" ? "⚠ VERIFIED" : "✓ RETRACTED"}</span>
-              <span style={badge("#60a5fa")}>{incident.city}</span>
+              <span style={badge(incident.status === "Verified" ? "#f87171" : "#34d399")}>
+                {incident.status === "Verified" ? <ShieldAlert size={10} /> : "✓"} 
+                {incident.status === "Verified" ? "VERIFIED" : "RETRACTED"}
+              </span>
+              <span style={badge("#60a5fa")}><MapPin size={10} /> {incident.city}</span>
               <span style={badge("#a78bfa")}>{incident.confidence}%</span>
             </div>
             <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4, lineHeight: 1.4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{incident.userInput}</div>
-            <div style={{ fontSize: 9, color: "var(--text-dim)" }}>{incident.time}</div>
+            <div style={{ fontSize: 9, color: "var(--text-dim)", display: "flex", alignItems: "center", gap: 4 }}><Clock size={10} /> {incident.time}</div>
           </div>
-          <span style={{ fontSize: 18, color: "var(--text-dim)", marginLeft: 10, flexShrink: 0 }}>›</span>
+          
+          <button 
+            onClick={(e) => onDelete(e, incident.id)}
+            style={{ padding: 8, background: "transparent", border: "none", color: "var(--text-dim)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "50%", transition: "all 0.2s" }}
+            onMouseOver={(e: any) => e.currentTarget.style.color = "#ef4444"}
+            onMouseOut={(e: any) => e.currentTarget.style.color = "var(--text-dim)"}
+          >
+            <X size={16} />
+          </button>
         </div>
       ))}
     </div>
